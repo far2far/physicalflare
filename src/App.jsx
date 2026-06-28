@@ -16,11 +16,6 @@ import {
 } from "./lib/flareLandscapeGenerator";
 import { createFallbackPalette, extractFlarePalette } from "./lib/flarePalette";
 import {
-  DEFAULT_GCODE_SETTINGS,
-  createGcodeSimulation,
-  getLayerGcodePreview
-} from "./lib/gcodeSimulator";
-import {
   MATERIAL_MODES,
   createMaterialCellMasks,
   getMaterialPlan,
@@ -74,8 +69,6 @@ function App() {
   const [status, setStatus] = useState("Preparing actual FLARES terrain...");
   const [viewerRenderMode, setViewerRenderMode] = useState("artwork");
   const [flarePreviewMode, setFlarePreviewMode] = useState("artwork");
-  const [gcodeSettings, setGcodeSettings] = useState(DEFAULT_GCODE_SETTINGS);
-  const [gcodeLayerIndex, setGcodeLayerIndex] = useState(0);
   const [wizardStep, setWizardStep] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
   const isMobileWizard = useMobileWizard();
@@ -132,17 +125,6 @@ function App() {
       terrain
     });
   }, [flarePalette, printer, settings, terrain]);
-
-  const gcodeSimulation = useMemo(() => {
-    return createGcodeSimulation({
-      flare: selectedFlare,
-      heightMap: physicalHeightMap,
-      materialPlan,
-      seedIndex: resolvedSeedIndex,
-      settings,
-      simulationSettings: gcodeSettings
-    });
-  }, [gcodeSettings, materialPlan, physicalHeightMap, resolvedSeedIndex, selectedFlare, settings]);
 
   const typeOptions = useMemo(() => {
     const source = collection.length ? collection : SAMPLE_FLARES;
@@ -441,16 +423,6 @@ function App() {
     setVisibleFlareCount((current) => Math.min(current + FLARE_PAGE_SIZE, matchingFlares.length));
   }, [matchingFlares.length]);
 
-  useEffect(() => {
-    setGcodeLayerIndex((current) =>
-      Math.min(Math.max(0, current), Math.max(0, gcodeSimulation.layerCount - 1))
-    );
-  }, [gcodeSimulation.layerCount]);
-
-  const updateGcodeSetting = (key, value) => {
-    setGcodeSettings((current) => ({ ...current, [key]: value }));
-  };
-
   const exportStl = useCallback(() => {
     if (!terrain) return;
     const blob = createBinaryStl(terrain, selectedFlare.name);
@@ -483,15 +455,6 @@ function App() {
     });
   }, [materialPlan, physicalHeightMap, resolvedSeedIndex, selectedFlare.name, settings]);
 
-  const exportSimulatedGcode = useCallback(() => {
-    if (!gcodeSimulation.gcodeLines.length) return;
-    const safeName = selectedFlare.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    const blob = new Blob([`${gcodeSimulation.gcodeLines.join("\n")}\n`], {
-      type: "text/x-gcode;charset=utf-8"
-    });
-    downloadBlob(blob, `${safeName || "physicalflare"}-simulated.gcode`);
-  }, [gcodeSimulation.gcodeLines, selectedFlare.name]);
-
   const fileSizeMb = terrain
     ? ((84 + (terrain.indices.length / 3) * 50) / 1024 / 1024).toFixed(1)
     : "0.0";
@@ -517,7 +480,6 @@ function App() {
   const materialSlotsLabel = `${materialPlan.requestedSlots}/${materialPlan.availableSlots}`;
   const renderModeLabel = {
     artwork: "Artwork relief",
-    gcode: "G-code path",
     materials: "4 material relief",
     solid: "Mono relief"
   }[viewerRenderMode];
@@ -536,9 +498,6 @@ function App() {
         exportReady={exportReady}
         fitLabel={fitLabel}
         flarePreviewMode={flarePreviewMode}
-        gcodeLayerIndex={gcodeLayerIndex}
-        gcodeSettings={gcodeSettings}
-        gcodeSimulation={gcodeSimulation}
         hasMoreFlares={hasMoreFlares}
         isGenerating={isGenerating}
         isLightMode={isLightMode}
@@ -550,8 +509,6 @@ function App() {
         materialPreviewPlan={materialPreviewPlan}
         modelSizeLabel={modelSizeLabel}
         onFlarePreviewModeChange={setFlarePreviewMode}
-        onGcodeLayerChange={setGcodeLayerIndex}
-        onGcodeSettingChange={updateGcodeSetting}
         onLandscapeChange={updateLandscapeSetting}
         onMaterialModeChange={setMaterialMode}
         onPreviewModeChange={setViewerRenderMode}
@@ -722,8 +679,6 @@ function App() {
             </div>
 
             <TerrainPreview
-              gcodeLayerIndex={gcodeLayerIndex}
-              gcodeSimulation={gcodeSimulation}
               imageSrc={artworkImage}
               isLightMode={isLightMode}
               isGenerating={isGenerating}
@@ -873,15 +828,6 @@ function App() {
           materialMode={materialMode}
           materialPlan={materialPlan}
           onChange={setMaterialMode}
-        />
-
-        <GcodePreviewPanel
-          layerIndex={gcodeLayerIndex}
-          onExport={exportSimulatedGcode}
-          onLayerChange={setGcodeLayerIndex}
-          onSettingChange={updateGcodeSetting}
-          settings={gcodeSettings}
-          simulation={gcodeSimulation}
         />
 
         <section className="tool-section generation-lab">
@@ -1323,18 +1269,10 @@ function WizardTerrainStep({
 }
 
 function WizardMaterialStep({
-  gcodeSettings,
   materialMode,
   materialPlan,
-  onGcodeSettingChange,
   onMaterialModeChange
 }) {
-  const qualityPresets = [
-    { label: "Fine", layer: 0.16, line: 1.0 },
-    { label: "Standard", layer: 0.2, line: 1.4 },
-    { label: "Draft", layer: 0.28, line: 2.2 }
-  ];
-
   return (
     <div className="wizard-step">
       <section className="wizard-panel">
@@ -1363,53 +1301,22 @@ function WizardMaterialStep({
           ))}
         </div>
       </section>
-
-      <section className="wizard-panel">
-        <div className="section-heading">
-          <h2>Print quality</h2>
-          <span>simulation</span>
-        </div>
-        <div className="wizard-segment-grid">
-          {qualityPresets.map((preset) => (
-            <button
-              className={Math.abs(gcodeSettings.layerHeightMm - preset.layer) < 0.001 ? "is-active" : ""}
-              key={preset.label}
-              onClick={() => {
-                onGcodeSettingChange("layerHeightMm", preset.layer);
-                onGcodeSettingChange("lineSpacingMm", preset.line);
-              }}
-              type="button"
-            >
-              <span>{preset.label}</span>
-              <strong>{`${preset.layer} mm`}</strong>
-            </button>
-          ))}
-        </div>
-        <div className="grid-two">
-          <NumberInput label="Layer" max={0.6} min={0.08} onChange={(value) => onGcodeSettingChange("layerHeightMm", value)} step={0.01} value={gcodeSettings.layerHeightMm} />
-          <NumberInput label="Line" max={8} min={0.35} onChange={(value) => onGcodeSettingChange("lineSpacingMm", value)} step={0.05} value={gcodeSettings.lineSpacingMm} />
-        </div>
-      </section>
     </div>
   );
 }
 
 function WizardPreviewStep(props) {
-  const activeLayer = props.gcodeSimulation.layers[props.gcodeLayerIndex];
-
   return (
     <div className="wizard-step">
       <section className="model-viewport wizard-preview-panel">
         <div className="viewport-heading">
           <div>
             <p>Preview</p>
-            <h2>{props.renderMode === "gcode" ? "G-code path" : "3D model"}</h2>
+            <h2>3D model</h2>
           </div>
           <RenderModeSwitch mode={props.renderMode} onChange={props.onPreviewModeChange} />
         </div>
         <TerrainPreview
-          gcodeLayerIndex={props.gcodeLayerIndex}
-          gcodeSimulation={props.gcodeSimulation}
           imageSrc={props.artworkImage}
           isGenerating={props.isGenerating}
           isLightMode={props.isLightMode}
@@ -1421,20 +1328,6 @@ function WizardPreviewStep(props) {
           waterLevel={props.waterLevel}
         />
       </section>
-
-      {props.renderMode === "gcode" && props.gcodeSimulation.layerCount > 0 && (
-        <label className="gcode-layer-control">
-          <span>{`Layer ${activeLayer ? activeLayer.index + 1 : 0}/${props.gcodeSimulation.layerCount}`}</span>
-          <input
-            max={Math.max(0, props.gcodeSimulation.layerCount - 1)}
-            min={0}
-            onChange={(event) => props.onGcodeLayerChange(Number(event.currentTarget.value))}
-            onInput={(event) => props.onGcodeLayerChange(Number(event.currentTarget.value))}
-            type="range"
-            value={props.gcodeLayerIndex}
-          />
-        </label>
-      )}
 
       <div className="wizard-summary-grid">
         <Metric label="Model" value={props.modelSizeLabel} />
@@ -1527,8 +1420,7 @@ function RenderModeSwitch({ mode, onChange }) {
   const modes = [
     { id: "artwork", label: "Artwork", title: "Show the original FLARE texture on the terrain" },
     { id: "materials", label: "4 Mat", title: "Show the FLARE quantized into four material colors" },
-    { id: "solid", label: "Mono", title: "Show a one-material printable surface" },
-    { id: "gcode", label: "G-code", title: "Show simulated printer movement paths" }
+    { id: "solid", label: "Mono", title: "Show a one-material printable surface" }
   ];
 
   return (
@@ -1638,157 +1530,6 @@ function FlareThumbnail({ flare }) {
       {imageSrc ? <img alt={flare.name} loading="lazy" src={imageSrc} /> : <span>{flare.name}</span>}
     </div>
   );
-}
-
-function GcodePreviewPanel({
-  layerIndex,
-  onExport,
-  onLayerChange,
-  onSettingChange,
-  settings,
-  simulation
-}) {
-  const layerCount = simulation.layerCount;
-  const activeLayerIndex = Math.min(layerIndex, Math.max(0, layerCount - 1));
-  const activeLayer = simulation.layers[activeLayerIndex];
-  const previewLines = getLayerGcodePreview(simulation, activeLayerIndex, 18);
-  const handleLayerInput = (event) => onLayerChange(Number(event.currentTarget.value));
-  const estimatedTime =
-    simulation.estimatedMinutes >= 90
-      ? `${(simulation.estimatedMinutes / 60).toFixed(1)} h`
-      : `${Math.ceil(simulation.estimatedMinutes)} min`;
-
-  return (
-    <section className="tool-section gcode-section">
-      <div className="section-heading">
-        <h2>G-code</h2>
-        <span>simulation</span>
-      </div>
-
-      <GcodeLayerCanvas layer={activeLayer} simulation={simulation} />
-
-      <label className="gcode-layer-control">
-        <span>{`Layer ${layerCount ? activeLayerIndex + 1 : 0}/${layerCount}`}</span>
-        <input
-          disabled={!layerCount}
-          max={Math.max(0, layerCount - 1)}
-          min={0}
-          onChange={handleLayerInput}
-          onInput={handleLayerInput}
-          type="range"
-          value={activeLayerIndex}
-        />
-      </label>
-
-      <div className="grid-two">
-        <NumberInput
-          label="Layer"
-          max={0.6}
-          min={0.08}
-          onChange={(value) => onSettingChange("layerHeightMm", value)}
-          step={0.01}
-          value={settings.layerHeightMm}
-        />
-        <NumberInput
-          label="Line"
-          max={8}
-          min={0.35}
-          onChange={(value) => onSettingChange("lineSpacingMm", value)}
-          step={0.05}
-          value={settings.lineSpacingMm}
-        />
-      </div>
-
-      <div className="metric-grid">
-        <Metric label="Time" value={layerCount ? estimatedTime : "-"} />
-        <Metric label="Lines" value={simulation.gcodeLines.length ? simulation.gcodeLines.length.toLocaleString() : "-"} />
-        <Metric label="Path" value={simulation.printPathMm ? `${Math.round(simulation.printPathMm / 1000)} m` : "-"} />
-        <Metric label="Tools" value={simulation.toolChanges ? simulation.toolChanges.toLocaleString() : "0"} />
-      </div>
-
-      <pre className="gcode-preview-lines" aria-label="G-code layer preview">
-        {previewLines.length ? previewLines.join("\n") : "; waiting for terrain"}
-      </pre>
-
-      <button
-        className="secondary-action"
-        disabled={!simulation.gcodeLines.length}
-        onClick={onExport}
-        type="button"
-      >
-        Export sim G-code
-      </button>
-    </section>
-  );
-}
-
-function GcodeLayerCanvas({ layer, simulation }) {
-  const canvasRef = useRef(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const width = Math.max(1, Math.round(rect.width * dpr));
-    const height = Math.max(1, Math.round(rect.height * dpr));
-    canvas.width = width;
-    canvas.height = height;
-
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, rect.width, rect.height);
-    ctx.fillStyle = "#f0efeb";
-    ctx.fillRect(0, 0, rect.width, rect.height);
-    ctx.strokeStyle = "#d4cec3";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(0.5, 0.5, rect.width - 1, rect.height - 1);
-
-    if (!layer?.paths?.length || !simulation.modelWidthMm || !simulation.modelDepthMm) {
-      ctx.fillStyle = "#8a8177";
-      ctx.font = "11px monospace";
-      ctx.fillText("NO TOOLPATH", 12, 22);
-      return;
-    }
-
-    const pad = 12;
-    const scale = Math.min(
-      (rect.width - pad * 2) / simulation.modelWidthMm,
-      (rect.height - pad * 2) / simulation.modelDepthMm
-    );
-    const drawW = simulation.modelWidthMm * scale;
-    const drawH = simulation.modelDepthMm * scale;
-    const xOffset = (rect.width - drawW) / 2;
-    const yOffset = (rect.height - drawH) / 2;
-    const toCanvas = (point) => ({
-      x: xOffset + (point.x + simulation.modelWidthMm / 2) * scale,
-      y: yOffset + (simulation.modelDepthMm / 2 - point.y) * scale
-    });
-
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-
-    layer.paths.forEach((path) => {
-      const color = simulation.tools[path.materialIndex]?.color ?? "#d84f94";
-      const start = toCanvas(path.points[0]);
-      const end = toCanvas(path.points[1]);
-      ctx.beginPath();
-      ctx.moveTo(start.x, start.y);
-      ctx.lineTo(end.x, end.y);
-      ctx.strokeStyle = color;
-      ctx.globalAlpha = path.type === "perimeter" ? 0.95 : 0.74;
-      ctx.lineWidth = path.type === "perimeter" ? 2 : 1.15;
-      ctx.stroke();
-    });
-
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = "#27231f";
-    ctx.font = "11px monospace";
-    ctx.fillText(`Z ${roundMm(layer.z)} MM`, 12, rect.height - 12);
-  }, [layer, simulation]);
-
-  return <canvas className="gcode-layer-canvas" ref={canvasRef} />;
 }
 
 function FlareSourcePanel({ flare, imageSrc, materialPlan, onPreviewModeChange, previewMode }) {
@@ -1935,8 +1676,6 @@ function MockupShot({ kind, label }) {
 }
 
 function TerrainPreview({
-  gcodeLayerIndex,
-  gcodeSimulation,
   imageSrc,
   isLightMode,
   isGenerating,
@@ -1952,7 +1691,6 @@ function TerrainPreview({
   const waterRailRef = useRef(null);
   const waterRailDragRef = useRef(false);
   const waterPropsRef = useRef({ onWaterLevelChange, trimWater, waterLevel });
-  const activeGcodeLayer = gcodeSimulation?.layers?.[gcodeLayerIndex] ?? null;
 
   const setView = useCallback((view) => {
     const runtime = runtimeRef.current;
@@ -2194,7 +1932,6 @@ function TerrainPreview({
       camera,
       controls,
       currentTerrain: null,
-      gcodeOverlay: null,
       grid,
       modelRoot,
       view: "iso",
@@ -2246,7 +1983,6 @@ function TerrainPreview({
 
     const viewerTheme = runtime.viewerTheme ?? getViewerTheme(isLightMode);
     const usesArtworkTexture = renderMode === "artwork";
-    const usesGcodePreview = renderMode === "gcode";
     const usesMaterialColors = renderMode === "materials";
     writePreviewColors(
       colors,
@@ -2272,9 +2008,9 @@ function TerrainPreview({
       emissiveIntensity: usesArtworkTexture || usesMaterialColors ? 0 : 0.12,
       roughness: 0.7,
       metalness: 0.02,
-      opacity: isPlaceholder ? 0.74 : usesGcodePreview ? 0.3 : 1,
+      opacity: isPlaceholder ? 0.74 : 1,
       side: THREE.DoubleSide,
-      transparent: isPlaceholder || usesGcodePreview,
+      transparent: isPlaceholder,
       vertexColors: usesMaterialColors
     });
     const mesh = new THREE.Mesh(geometry, material);
@@ -2287,7 +2023,7 @@ function TerrainPreview({
     const edgeMaterial = new THREE.LineBasicMaterial({
       color: usesArtworkTexture ? viewerTheme.textureEdges : viewerTheme.solidEdges,
       transparent: true,
-      opacity: isPlaceholder ? 0.18 : usesArtworkTexture ? 0.22 : usesGcodePreview ? 0.18 : 0.34
+      opacity: isPlaceholder ? 0.18 : usesArtworkTexture ? 0.22 : 0.34
     });
     const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
     edges.userData.role = "terrainEdges";
@@ -2339,38 +2075,6 @@ function TerrainPreview({
 
   useEffect(() => {
     const runtime = runtimeRef.current;
-    if (!runtime) return undefined;
-
-    if (runtime.gcodeOverlay) {
-      runtime.modelRoot.remove(runtime.gcodeOverlay);
-      disposeObject(runtime.gcodeOverlay);
-      runtime.gcodeOverlay = null;
-    }
-
-    if (renderMode !== "gcode") return undefined;
-
-    const layer = gcodeSimulation?.layers?.[gcodeLayerIndex];
-    if (!layer?.paths?.length) return undefined;
-
-    const overlay = createGcodePathOverlay({
-      layer,
-      simulation: gcodeSimulation,
-      theme: getViewerTheme(isLightMode)
-    });
-    runtime.modelRoot.add(overlay);
-    runtime.gcodeOverlay = overlay;
-
-    return () => {
-      if (runtime.gcodeOverlay === overlay) {
-        runtime.modelRoot.remove(overlay);
-        runtime.gcodeOverlay = null;
-      }
-      disposeObject(overlay);
-    };
-  }, [gcodeLayerIndex, gcodeSimulation, isLightMode, renderMode]);
-
-  useEffect(() => {
-    const runtime = runtimeRef.current;
     if (!runtime) return;
 
     runtime.viewerTheme = getViewerTheme(isLightMode);
@@ -2390,13 +2094,6 @@ function TerrainPreview({
         <div className={`water-gizmo-readout ${trimWater ? "is-active" : ""}`}>
           <span>Water Z</span>
           <strong>{trimWater ? `${Math.round(clampWaterLevel(waterLevel) * 100)}%` : "Off"}</strong>
-        </div>
-      )}
-      {terrain && renderMode === "gcode" && activeGcodeLayer && (
-        <div className="gcode-viewer-readout">
-          <span>{`Layer ${activeGcodeLayer.index + 1}/${gcodeSimulation.layerCount}`}</span>
-          <strong>{`Z ${roundMm(activeGcodeLayer.z)} mm`}</strong>
-          <em>{`${activeGcodeLayer.paths.length} paths`}</em>
         </div>
       )}
       {terrain && (
@@ -2696,127 +2393,10 @@ function updateBuildPlate(runtime, model) {
   runtime.scene.add(runtime.grid);
 }
 
-function createGcodePathOverlay({ layer, simulation, theme }) {
-  const root = new THREE.Group();
-  root.name = "gcode-path-overlay";
-
-  const extrusionByTool = new Map();
-  const travelPositions = [];
-  const z = layer.z + 0.85;
-  const travelZ = z + 1.2;
-  let lastEnd = null;
-  let printHeadPoint = null;
-
-  layer.paths.forEach((path) => {
-    const [start, end] = path.points;
-    const tool = simulation.tools[path.materialIndex] ?? simulation.tools[0];
-    const key = tool?.tool ?? `T${path.materialIndex + 1}`;
-    const printPositions = extrusionByTool.get(key) ?? {
-      color: tool?.color ?? "#d84f94",
-      positions: []
-    };
-
-    if (lastEnd && distance2d(lastEnd, start) > 0.01) {
-      pushGcodeSegment(travelPositions, lastEnd, start, travelZ);
-    }
-
-    pushGcodeSegment(printPositions.positions, start, end, z);
-    extrusionByTool.set(key, printPositions);
-    lastEnd = end;
-    printHeadPoint = end;
-  });
-
-  if (travelPositions.length) {
-    const travel = createGcodeLineSegments(
-      travelPositions,
-      theme.gcodeTravel,
-      0.18,
-      "gcode-travel"
-    );
-    root.add(travel);
-  }
-
-  extrusionByTool.forEach((toolPath, tool) => {
-    if (!toolPath.positions.length) return;
-    const line = createGcodeLineSegments(toolPath.positions, toolPath.color, 0.96, `gcode-${tool}`);
-    root.add(line);
-  });
-
-  if (printHeadPoint) {
-    const head = createGcodePrintHead(printHeadPoint, z + 2.8, theme);
-    root.add(head);
-  }
-
-  return root;
-}
-
-function createGcodeLineSegments(positions, color, opacity, name) {
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-
-  const material = new THREE.LineBasicMaterial({
-    color: new THREE.Color(color),
-    depthTest: false,
-    depthWrite: false,
-    transparent: true,
-    opacity
-  });
-
-  const line = new THREE.LineSegments(geometry, material);
-  line.name = name;
-  line.renderOrder = 20;
-  return line;
-}
-
-function createGcodePrintHead(point, z, theme) {
-  const root = new THREE.Group();
-  root.name = "gcode-print-head";
-  root.position.set(point.x, z, -point.y);
-
-  const color = new THREE.Color(theme.gcodeHead);
-  const sphere = new THREE.Mesh(
-    new THREE.SphereGeometry(3.3, 18, 12),
-    new THREE.MeshBasicMaterial({
-      color,
-      depthTest: false,
-      depthWrite: false
-    })
-  );
-  sphere.renderOrder = 24;
-  root.add(sphere);
-
-  const nozzle = new THREE.Mesh(
-    new THREE.ConeGeometry(2.4, 7.5, 20),
-    new THREE.MeshBasicMaterial({
-      color,
-      depthTest: false,
-      depthWrite: false,
-      transparent: true,
-      opacity: 0.82
-    })
-  );
-  nozzle.position.y = -5.6;
-  nozzle.rotation.x = Math.PI;
-  nozzle.renderOrder = 23;
-  root.add(nozzle);
-
-  return root;
-}
-
-function pushGcodeSegment(positions, start, end, z) {
-  positions.push(start.x, z, -start.y, end.x, z, -end.y);
-}
-
-function distance2d(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
 function getViewerTheme(isLightMode) {
   return isLightMode
     ? {
         background: 0xf0efeb,
-        gcodeHead: 0x111111,
-        gcodeTravel: 0x6f6a61,
         gridMajor: 0xc6c0b6,
         gridMinor: 0xdfdad2,
         low: 0xd3ddd9,
@@ -2829,8 +2409,6 @@ function getViewerTheme(isLightMode) {
       }
     : {
         background: 0x0d0e0d,
-        gcodeHead: 0xffffff,
-        gcodeTravel: 0x8c8f8b,
         gridMajor: 0x5e645b,
         gridMinor: 0x2b302c,
         low: 0x273936,

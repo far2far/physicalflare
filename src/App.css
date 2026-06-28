@@ -588,9 +588,9 @@ button {
 
 .render-mode-switch {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
-  min-width: min(360px, 68vw);
+  min-width: min(280px, 68vw);
 }
 
 .render-mode-switch button {
@@ -689,36 +689,6 @@ button {
   border: 1px solid var(--pf-line);
   background: var(--pf-panel);
   pointer-events: none;
-}
-
-.gcode-viewer-readout {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--pf-line);
-  background: var(--pf-panel);
-  pointer-events: none;
-}
-
-.gcode-viewer-readout span,
-.gcode-viewer-readout em {
-  color: var(--pf-muted);
-  font-size: 0.72rem;
-  font-style: normal;
-  text-transform: uppercase;
-}
-
-.gcode-viewer-readout strong {
-  color: var(--pf-accent);
-  font-size: 0.78rem;
-  font-weight: 400;
-  text-transform: uppercase;
 }
 
 .water-gizmo-readout.is-active {
@@ -927,51 +897,6 @@ button {
 
 .material-metric-grid .metric {
   min-height: 46px;
-}
-
-.gcode-section {
-  gap: 10px;
-}
-
-.gcode-layer-canvas {
-  display: block;
-  width: 100%;
-  height: 220px;
-  border: 1px solid var(--pf-line);
-  background: var(--pf-viewer-shell);
-}
-
-.gcode-layer-control {
-  display: grid;
-  gap: 7px;
-}
-
-.gcode-layer-control span {
-  color: var(--pf-muted);
-  font-size: 0.74rem;
-  text-transform: uppercase;
-}
-
-.gcode-layer-control input {
-  width: 100%;
-  min-height: 18px;
-  padding: 0;
-  accent-color: var(--pf-accent);
-  background: transparent;
-}
-
-.gcode-preview-lines {
-  max-height: 180px;
-  margin: 0;
-  overflow: auto;
-  padding: 9px;
-  color: var(--pf-fg);
-  border: 1px solid var(--pf-line);
-  background: var(--pf-field);
-  font-family: var(--pf-font-ascii);
-  font-size: 0.66rem;
-  line-height: 1.45;
-  white-space: pre;
 }
 
 .mockup-screen {
