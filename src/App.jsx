@@ -16,6 +16,11 @@ import {
 } from "./lib/flareLandscapeGenerator";
 import { createFallbackPalette, extractFlarePalette } from "./lib/flarePalette";
 import {
+  DEFAULT_GCODE_SETTINGS,
+  createGcodeSimulation,
+  getLayerGcodePreview
+} from "./lib/gcodeSimulator";
+import {
   MATERIAL_MODES,
   createMaterialCellMasks,
   getMaterialPlan,
@@ -43,6 +48,7 @@ const WATER_MESH_COMMIT_INTERVAL_MS = 180;
 const INITIAL_FLARE_COUNT = 120;
 const FLARE_PAGE_SIZE = 96;
 const SAMPLE_SEEDS = new Map(SAMPLE_FLARES.map((flare) => [flare.inscriptionId, flare.seedIndex]));
+const WIZARD_STEPS = ["Pick", "Size", "Terrain", "Material", "Preview", "Order"];
 
 function App() {
   const [collection, setCollection] = useState(SAMPLE_FLARES);
@@ -66,9 +72,13 @@ function App() {
   const [heightMap, setHeightMap] = useState(null);
   const [terrain, setTerrain] = useState(null);
   const [status, setStatus] = useState("Preparing actual FLARES terrain...");
-  const [texturePreview, setTexturePreview] = useState(true);
+  const [viewerRenderMode, setViewerRenderMode] = useState("artwork");
   const [flarePreviewMode, setFlarePreviewMode] = useState("artwork");
+  const [gcodeSettings, setGcodeSettings] = useState(DEFAULT_GCODE_SETTINGS);
+  const [gcodeLayerIndex, setGcodeLayerIndex] = useState(0);
+  const [wizardStep, setWizardStep] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
+  const isMobileWizard = useMobileWizard();
   const pendingWaterLevelRef = useRef(DEFAULT_LANDSCAPE_SETTINGS.waterLevel);
   const lastWaterCommitAtRef = useRef(0);
   const waterCommitTimerRef = useRef(null);
@@ -112,6 +122,27 @@ function App() {
       terrain
     });
   }, [flarePalette, materialMode, printer, settings, terrain]);
+
+  const materialPreviewPlan = useMemo(() => {
+    return getMaterialPlan({
+      mode: "flare-colors",
+      palette: flarePalette,
+      printer,
+      settings,
+      terrain
+    });
+  }, [flarePalette, printer, settings, terrain]);
+
+  const gcodeSimulation = useMemo(() => {
+    return createGcodeSimulation({
+      flare: selectedFlare,
+      heightMap: physicalHeightMap,
+      materialPlan,
+      seedIndex: resolvedSeedIndex,
+      settings,
+      simulationSettings: gcodeSettings
+    });
+  }, [gcodeSettings, materialPlan, physicalHeightMap, resolvedSeedIndex, selectedFlare, settings]);
 
   const typeOptions = useMemo(() => {
     const source = collection.length ? collection : SAMPLE_FLARES;
@@ -396,17 +427,29 @@ function App() {
     setHeightMap(null);
     setTerrain(null);
     setStatus(`Preparing ${flare.name}...`);
+    setWizardStep(1);
     setScreen("studio");
   }, []);
 
   const returnToPicker = useCallback(() => {
     setScreen("landing");
+    setWizardStep(0);
     setIsGenerating(false);
   }, []);
 
   const showMoreFlares = useCallback(() => {
     setVisibleFlareCount((current) => Math.min(current + FLARE_PAGE_SIZE, matchingFlares.length));
   }, [matchingFlares.length]);
+
+  useEffect(() => {
+    setGcodeLayerIndex((current) =>
+      Math.min(Math.max(0, current), Math.max(0, gcodeSimulation.layerCount - 1))
+    );
+  }, [gcodeSimulation.layerCount]);
+
+  const updateGcodeSetting = (key, value) => {
+    setGcodeSettings((current) => ({ ...current, [key]: value }));
+  };
 
   const exportStl = useCallback(() => {
     if (!terrain) return;
@@ -440,6 +483,15 @@ function App() {
     });
   }, [materialPlan, physicalHeightMap, resolvedSeedIndex, selectedFlare.name, settings]);
 
+  const exportSimulatedGcode = useCallback(() => {
+    if (!gcodeSimulation.gcodeLines.length) return;
+    const safeName = selectedFlare.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    const blob = new Blob([`${gcodeSimulation.gcodeLines.join("\n")}\n`], {
+      type: "text/x-gcode;charset=utf-8"
+    });
+    downloadBlob(blob, `${safeName || "physicalflare"}-simulated.gcode`);
+  }, [gcodeSimulation.gcodeLines, selectedFlare.name]);
+
   const fileSizeMb = terrain
     ? ((84 + (terrain.indices.length / 3) * 50) / 1024 / 1024).toFixed(1)
     : "0.0";
@@ -463,10 +515,78 @@ function App() {
     : "Full field";
   const footprintLabel = terrain?.stats.trimmed ? "Islands" : "Full field";
   const materialSlotsLabel = `${materialPlan.requestedSlots}/${materialPlan.availableSlots}`;
+  const renderModeLabel = {
+    artwork: "Artwork relief",
+    gcode: "G-code path",
+    materials: "4 material relief",
+    solid: "Mono relief"
+  }[viewerRenderMode];
   const themeClass = isLightMode ? "is-light" : "is-dark";
   const toggleTheme = useCallback(() => {
     setIsLightMode((current) => !current);
   }, []);
+
+  if (isMobileWizard) {
+    return (
+      <MobileWizardFlow
+        activeType={typeFilter}
+        activeTypeLabel={activeTypeLabel}
+        artworkImage={artworkImage}
+        collectionCount={collectionCount}
+        exportReady={exportReady}
+        fitLabel={fitLabel}
+        flarePreviewMode={flarePreviewMode}
+        gcodeLayerIndex={gcodeLayerIndex}
+        gcodeSettings={gcodeSettings}
+        gcodeSimulation={gcodeSimulation}
+        hasMoreFlares={hasMoreFlares}
+        isGenerating={isGenerating}
+        isLightMode={isLightMode}
+        landCoverageLabel={landCoverageLabel}
+        landscapePreset={landscapePreset}
+        landscapeSettings={landscapeSettings}
+        materialMode={materialMode}
+        materialPlan={materialPlan}
+        materialPreviewPlan={materialPreviewPlan}
+        modelSizeLabel={modelSizeLabel}
+        onFlarePreviewModeChange={setFlarePreviewMode}
+        onGcodeLayerChange={setGcodeLayerIndex}
+        onGcodeSettingChange={updateGcodeSetting}
+        onLandscapeChange={updateLandscapeSetting}
+        onMaterialModeChange={setMaterialMode}
+        onPreviewModeChange={setViewerRenderMode}
+        onPrinterChange={setPrinterId}
+        onQueryChange={setQuery}
+        onReturnToPicker={returnToPicker}
+        onScaleToPrinter={scaleToPrinter}
+        onSelectFlare={selectFlare}
+        onSettingChange={updateSetting}
+        onShowMore={showMoreFlares}
+        onStepChange={setWizardStep}
+        onToggleTheme={toggleTheme}
+        onTypeChange={setTypeFilter}
+        onWaterLevelChange={updateWaterLevelFromViewer}
+        physicalHeightMap={physicalHeightMap}
+        pickerCountLabel={pickerCountLabel}
+        printer={printer}
+        printerId={printerId}
+        query={query}
+        renderMode={viewerRenderMode}
+        screen={screen}
+        selectedFlare={selectedFlare}
+        settings={settings}
+        status={status}
+        terrain={terrain}
+        themeClass={themeClass}
+        typeOptions={typeOptions}
+        visibleFlares={visibleFlares}
+        warnings={warnings}
+        waterLevel={viewerWaterLevel}
+        waterLevelLabel={waterLevelLabel}
+        wizardStep={wizardStep}
+      />
+    );
+  }
 
   if (screen === "landing") {
     return (
@@ -590,19 +710,27 @@ function App() {
             <div className="viewport-heading">
               <div>
                 <p>3D visualizer</p>
-                <h2>{texturePreview ? "Artwork relief" : "Solid terrain"}</h2>
+                <h2>{renderModeLabel}</h2>
               </div>
-              <span>{terrain ? "actual mesh" : "preview mesh"}</span>
+              <div className="viewport-heading-actions">
+                <RenderModeSwitch
+                  mode={viewerRenderMode}
+                  onChange={setViewerRenderMode}
+                />
+                <span>{terrain ? "actual mesh" : "preview mesh"}</span>
+              </div>
             </div>
 
             <TerrainPreview
+              gcodeLayerIndex={gcodeLayerIndex}
+              gcodeSimulation={gcodeSimulation}
               imageSrc={artworkImage}
               isLightMode={isLightMode}
               isGenerating={isGenerating}
-              materialPlan={materialPlan}
+              materialPlan={materialPreviewPlan}
               onWaterLevelChange={updateWaterLevelFromViewer}
+              renderMode={viewerRenderMode}
               terrain={terrain}
-              texturePreview={texturePreview}
               trimWater={landscapeSettings.trimWater}
               waterLevel={viewerWaterLevel}
             />
@@ -745,6 +873,15 @@ function App() {
           materialMode={materialMode}
           materialPlan={materialPlan}
           onChange={setMaterialMode}
+        />
+
+        <GcodePreviewPanel
+          layerIndex={gcodeLayerIndex}
+          onExport={exportSimulatedGcode}
+          onLayerChange={setGcodeLayerIndex}
+          onSettingChange={updateGcodeSetting}
+          settings={gcodeSettings}
+          simulation={gcodeSimulation}
         />
 
         <section className="tool-section generation-lab">
@@ -897,15 +1034,6 @@ function App() {
             <Metric label="Handoff" value={materialPlan.handoff} />
           </div>
 
-          <label className="toggle-row">
-            <input
-              checked={texturePreview}
-              onChange={(event) => setTexturePreview(event.target.checked)}
-              type="checkbox"
-            />
-            <span>Artwork material</span>
-          </label>
-
           <HeightmapPreview heightMap={physicalHeightMap} />
 
           <div className="warnings" aria-live="polite">
@@ -931,6 +1059,492 @@ function ThemeToggle({ isLightMode, onToggle }) {
     >
       {isLightMode ? "DARK" : "LIGHT"}
     </button>
+  );
+}
+
+function MobileWizardFlow(props) {
+  const activeStep =
+    props.screen === "landing"
+      ? 0
+      : Math.min(Math.max(1, props.wizardStep), WIZARD_STEPS.length - 1);
+  const canGoBack = activeStep > 0;
+  const canGoNext = props.screen === "studio" && activeStep < WIZARD_STEPS.length - 1;
+
+  const goBack = () => {
+    if (activeStep <= 1) {
+      props.onReturnToPicker();
+      return;
+    }
+    props.onStepChange(activeStep - 1);
+  };
+
+  const goNext = () => {
+    if (canGoNext) props.onStepChange(activeStep + 1);
+  };
+
+  return (
+    <main className={`mobile-wizard ${props.themeClass}`}>
+      <header className="wizard-header">
+        <div>
+          <p>physicalflare</p>
+          <h1>{WIZARD_STEPS[activeStep]}</h1>
+        </div>
+        <ThemeToggle isLightMode={props.isLightMode} onToggle={props.onToggleTheme} />
+      </header>
+
+      <nav className="wizard-progress" aria-label="Order progress">
+        {WIZARD_STEPS.map((step, index) => (
+          <button
+            aria-current={index === activeStep ? "step" : undefined}
+            className={index === activeStep ? "is-active" : index < activeStep ? "is-done" : ""}
+            disabled={props.screen === "landing" && index > 0}
+            key={step}
+            onClick={() => {
+              if (index === 0) props.onReturnToPicker();
+              else if (props.screen === "studio" && index <= activeStep) props.onStepChange(index);
+            }}
+            type="button"
+          >
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <strong>{step}</strong>
+          </button>
+        ))}
+      </nav>
+
+      <section className="wizard-body">
+        {activeStep === 0 && <WizardPickStep {...props} />}
+        {activeStep === 1 && <WizardSizeStep {...props} />}
+        {activeStep === 2 && <WizardTerrainStep {...props} />}
+        {activeStep === 3 && <WizardMaterialStep {...props} />}
+        {activeStep === 4 && <WizardPreviewStep {...props} />}
+        {activeStep === 5 && <WizardOrderStep {...props} />}
+      </section>
+
+      {props.screen === "studio" && (
+        <footer className="wizard-footer">
+          <button disabled={!canGoBack} onClick={goBack} type="button">
+            Back
+          </button>
+          {activeStep < WIZARD_STEPS.length - 1 ? (
+            <button className="primary-action" disabled={!canGoNext} onClick={goNext} type="button">
+              Continue
+            </button>
+          ) : (
+            <button className="primary-action" disabled type="button">
+              Checkout soon
+            </button>
+          )}
+        </footer>
+      )}
+    </main>
+  );
+}
+
+function WizardPickStep({
+  activeType,
+  activeTypeLabel,
+  collectionCount,
+  hasMoreFlares,
+  onQueryChange,
+  onSelectFlare,
+  onShowMore,
+  onTypeChange,
+  pickerCountLabel,
+  query,
+  selectedFlare,
+  typeOptions,
+  visibleFlares
+}) {
+  return (
+    <div className="wizard-step">
+      <div className="wizard-step-heading">
+        <p>{`${collectionCount} FLARES`}</p>
+        <h2>{activeTypeLabel}</h2>
+      </div>
+
+      <label className="search-field">
+        <span>Search</span>
+        <input
+          aria-label="Search FLARES"
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder="FLARE #95, type, or inscription"
+          type="search"
+          value={query}
+        />
+      </label>
+
+      <TypeFilterRail
+        activeType={activeType}
+        collectionCount={collectionCount}
+        onSelectType={onTypeChange}
+        typeOptions={typeOptions}
+      />
+
+      <div className="wizard-flare-grid">
+        {visibleFlares.map((flare) => (
+          <FlareCard
+            flare={flare}
+            isActive={selectedFlare.inscriptionId === flare.inscriptionId}
+            key={flare.inscriptionId}
+            onSelect={onSelectFlare}
+          />
+        ))}
+      </div>
+
+      <div className="picker-footer">
+        <span>{pickerCountLabel}</span>
+        {hasMoreFlares && (
+          <button className="secondary-action" onClick={onShowMore} type="button">
+            Load more
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WizardSizeStep({
+  artworkImage,
+  modelSizeLabel,
+  onPrinterChange,
+  onScaleToPrinter,
+  onSettingChange,
+  printer,
+  printerId,
+  selectedFlare,
+  settings
+}) {
+  const presets = [
+    { depth: 120, label: "Small", relief: 18, width: 120 },
+    { depth: 180, label: "Studio", relief: 28, width: 180 },
+    { depth: 240, label: "Large", relief: 36, width: 240 }
+  ];
+
+  const applyPreset = (preset) => {
+    onSettingChange("widthMm", preset.width);
+    onSettingChange("depthMm", preset.depth);
+    onSettingChange("reliefHeightMm", preset.relief);
+  };
+
+  return (
+    <div className="wizard-step">
+      <WizardFlareSummary flare={selectedFlare} imageSrc={artworkImage} meta={modelSizeLabel} />
+
+      <section className="wizard-panel">
+        <div className="section-heading">
+          <h2>Build size</h2>
+          <span>{printer.name}</span>
+        </div>
+        <div className="wizard-segment-grid">
+          {presets.map((preset) => (
+            <button key={preset.label} onClick={() => applyPreset(preset)} type="button">
+              <span>{preset.label}</span>
+              <strong>{`${preset.width} mm`}</strong>
+            </button>
+          ))}
+        </div>
+        <select
+          aria-label="Printer"
+          value={printerId}
+          onChange={(event) => onPrinterChange(event.target.value)}
+        >
+          {PRINTER_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.name}
+            </option>
+          ))}
+        </select>
+        <button className="secondary-action" onClick={onScaleToPrinter} type="button">
+          Scale to build plate
+        </button>
+      </section>
+
+      <section className="wizard-panel">
+        <div className="grid-two">
+          <NumberInput label="Width" max={1200} min={20} onChange={(value) => onSettingChange("widthMm", value)} value={settings.widthMm} />
+          <NumberInput label="Depth" max={1200} min={20} onChange={(value) => onSettingChange("depthMm", value)} value={settings.depthMm} />
+          <NumberInput label="Relief" max={300} min={1} onChange={(value) => onSettingChange("reliefHeightMm", value)} value={settings.reliefHeightMm} />
+          <NumberInput label="Base" max={40} min={0.8} onChange={(value) => onSettingChange("baseThicknessMm", value)} step={0.2} value={settings.baseThicknessMm} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WizardTerrainStep({
+  landscapePreset,
+  landscapeSettings,
+  onLandscapeChange,
+  onWaterLevelChange,
+  physicalHeightMap,
+  waterLevel,
+  waterLevelLabel
+}) {
+  return (
+    <div className="wizard-step">
+      <section className="wizard-panel">
+        <div className="section-heading">
+          <h2>Landscape</h2>
+          <span>{landscapePreset.name}</span>
+        </div>
+        <label className="control-row">
+          <span>Mode</span>
+          <select
+            aria-label="Terrain mode"
+            value={landscapeSettings.mode}
+            onChange={(event) => onLandscapeChange({ mode: event.target.value })}
+          >
+            {LANDSCAPE_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="grid-two">
+          <NumberInput label="Curve" max={2.6} min={0.35} onChange={(value) => onLandscapeChange({ curve: value })} step={0.05} value={landscapeSettings.curve} />
+          <NumberInput label="Smooth" max={4} min={0} onChange={(value) => onLandscapeChange({ smoothing: value })} value={landscapeSettings.smoothing} />
+          <NumberInput label="Ridges" max={1} min={0} onChange={(value) => onLandscapeChange({ ridgeGain: value })} step={0.05} value={landscapeSettings.ridgeGain} />
+          <NumberInput label="Water" max={0.95} min={0} onChange={(value) => onWaterLevelChange(value, { commitNow: true })} step={0.01} value={waterLevel} />
+        </div>
+        <label className="toggle-row">
+          <input
+            checked={landscapeSettings.trimWater}
+            onChange={(event) => onLandscapeChange({ trimWater: event.target.checked })}
+            type="checkbox"
+          />
+          <span>{`Island trim / ${waterLevelLabel}`}</span>
+        </label>
+      </section>
+
+      <HeightmapPreview heightMap={physicalHeightMap} />
+    </div>
+  );
+}
+
+function WizardMaterialStep({
+  gcodeSettings,
+  materialMode,
+  materialPlan,
+  onGcodeSettingChange,
+  onMaterialModeChange
+}) {
+  const qualityPresets = [
+    { label: "Fine", layer: 0.16, line: 1.0 },
+    { label: "Standard", layer: 0.2, line: 1.4 },
+    { label: "Draft", layer: 0.28, line: 2.2 }
+  ];
+
+  return (
+    <div className="wizard-step">
+      <section className="wizard-panel">
+        <div className="section-heading">
+          <h2>Materials</h2>
+          <span>{`${materialPlan.requestedSlots}/${materialPlan.availableSlots} tools`}</span>
+        </div>
+        <select
+          aria-label="Material mode"
+          value={materialMode}
+          onChange={(event) => onMaterialModeChange(event.target.value)}
+        >
+          {MATERIAL_MODES.map((mode) => (
+            <option key={mode.id} value={mode.id}>
+              {mode.name}
+            </option>
+          ))}
+        </select>
+        <div className="material-band-grid" aria-label="Material colors">
+          {materialPlan.bands.map((band) => (
+            <div className="material-band" key={band.id} style={{ "--band-color": band.color }}>
+              <span>{band.tool}</span>
+              <strong>{band.name}</strong>
+              <em>{band.range}</em>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="wizard-panel">
+        <div className="section-heading">
+          <h2>Print quality</h2>
+          <span>simulation</span>
+        </div>
+        <div className="wizard-segment-grid">
+          {qualityPresets.map((preset) => (
+            <button
+              className={Math.abs(gcodeSettings.layerHeightMm - preset.layer) < 0.001 ? "is-active" : ""}
+              key={preset.label}
+              onClick={() => {
+                onGcodeSettingChange("layerHeightMm", preset.layer);
+                onGcodeSettingChange("lineSpacingMm", preset.line);
+              }}
+              type="button"
+            >
+              <span>{preset.label}</span>
+              <strong>{`${preset.layer} mm`}</strong>
+            </button>
+          ))}
+        </div>
+        <div className="grid-two">
+          <NumberInput label="Layer" max={0.6} min={0.08} onChange={(value) => onGcodeSettingChange("layerHeightMm", value)} step={0.01} value={gcodeSettings.layerHeightMm} />
+          <NumberInput label="Line" max={8} min={0.35} onChange={(value) => onGcodeSettingChange("lineSpacingMm", value)} step={0.05} value={gcodeSettings.lineSpacingMm} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function WizardPreviewStep(props) {
+  const activeLayer = props.gcodeSimulation.layers[props.gcodeLayerIndex];
+
+  return (
+    <div className="wizard-step">
+      <section className="model-viewport wizard-preview-panel">
+        <div className="viewport-heading">
+          <div>
+            <p>Preview</p>
+            <h2>{props.renderMode === "gcode" ? "G-code path" : "3D model"}</h2>
+          </div>
+          <RenderModeSwitch mode={props.renderMode} onChange={props.onPreviewModeChange} />
+        </div>
+        <TerrainPreview
+          gcodeLayerIndex={props.gcodeLayerIndex}
+          gcodeSimulation={props.gcodeSimulation}
+          imageSrc={props.artworkImage}
+          isGenerating={props.isGenerating}
+          isLightMode={props.isLightMode}
+          materialPlan={props.materialPreviewPlan}
+          onWaterLevelChange={props.onWaterLevelChange}
+          renderMode={props.renderMode}
+          terrain={props.terrain}
+          trimWater={props.landscapeSettings.trimWater}
+          waterLevel={props.waterLevel}
+        />
+      </section>
+
+      {props.renderMode === "gcode" && props.gcodeSimulation.layerCount > 0 && (
+        <label className="gcode-layer-control">
+          <span>{`Layer ${activeLayer ? activeLayer.index + 1 : 0}/${props.gcodeSimulation.layerCount}`}</span>
+          <input
+            max={Math.max(0, props.gcodeSimulation.layerCount - 1)}
+            min={0}
+            onChange={(event) => props.onGcodeLayerChange(Number(event.currentTarget.value))}
+            onInput={(event) => props.onGcodeLayerChange(Number(event.currentTarget.value))}
+            type="range"
+            value={props.gcodeLayerIndex}
+          />
+        </label>
+      )}
+
+      <div className="wizard-summary-grid">
+        <Metric label="Model" value={props.modelSizeLabel} />
+        <Metric label="Fit" value={props.fitLabel} />
+        <Metric label="Material" value={props.materialPlan.name} />
+        <Metric label="Land" value={props.landCoverageLabel} />
+      </div>
+
+      <div className="warnings" aria-live="polite">
+        {props.warnings.length === 0 ? (
+          <p>Ready for order review.</p>
+        ) : (
+          props.warnings.slice(0, 3).map((warning) => <p key={warning}>{warning}</p>)
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WizardOrderStep({
+  artworkImage,
+  exportReady,
+  fitLabel,
+  materialPlan,
+  modelSizeLabel,
+  printer,
+  selectedFlare,
+  settings
+}) {
+  const placeholderPrice = estimatePlaceholderPrice(settings, materialPlan);
+
+  return (
+    <div className="wizard-step">
+      <WizardFlareSummary
+        flare={selectedFlare}
+        imageSrc={artworkImage}
+        meta={`${modelSizeLabel} / ${materialPlan.name}`}
+      />
+
+      <section className="wizard-panel">
+        <div className="section-heading">
+          <h2>Order</h2>
+          <span>{fitLabel}</span>
+        </div>
+        <div className="wizard-summary-grid">
+          <Metric label="Printer" value={printer.name} />
+          <Metric label="Material" value={materialPlan.name} />
+          <Metric label="Estimate" value={`$${placeholderPrice}`} />
+          <Metric label="Status" value={exportReady ? "Ready" : "Review"} />
+        </div>
+      </section>
+
+      <form className="wizard-payment-form" onSubmit={(event) => event.preventDefault()}>
+        <label>
+          <span>Email</span>
+          <input autoComplete="email" placeholder="collector@example.com" type="email" />
+        </label>
+        <label>
+          <span>Ship to</span>
+          <input autoComplete="shipping street-address" placeholder="Shipping address" type="text" />
+        </label>
+        <label>
+          <span>Payment</span>
+          <input disabled placeholder="Stripe / wallet placeholder" type="text" />
+        </label>
+        <button className="primary-action" disabled type="submit">
+          Checkout placeholder
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function WizardFlareSummary({ flare, imageSrc, meta }) {
+  return (
+    <section className="wizard-flare-summary">
+      <div className="flare-thumbnail">
+        {imageSrc ? <img alt={flare.name} src={imageSrc} /> : <span>{flare.name}</span>}
+      </div>
+      <div>
+        <p>{flare.type}</p>
+        <h2>{flare.name}</h2>
+        <span>{meta}</span>
+      </div>
+    </section>
+  );
+}
+
+function RenderModeSwitch({ mode, onChange }) {
+  const modes = [
+    { id: "artwork", label: "Artwork", title: "Show the original FLARE texture on the terrain" },
+    { id: "materials", label: "4 Mat", title: "Show the FLARE quantized into four material colors" },
+    { id: "solid", label: "Mono", title: "Show a one-material printable surface" },
+    { id: "gcode", label: "G-code", title: "Show simulated printer movement paths" }
+  ];
+
+  return (
+    <div className="render-mode-switch" aria-label="3D render mode">
+      {modes.map((item) => (
+        <button
+          className={mode === item.id ? "is-active" : ""}
+          key={item.id}
+          onClick={() => onChange(item.id)}
+          title={item.title}
+          type="button"
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -1024,6 +1638,157 @@ function FlareThumbnail({ flare }) {
       {imageSrc ? <img alt={flare.name} loading="lazy" src={imageSrc} /> : <span>{flare.name}</span>}
     </div>
   );
+}
+
+function GcodePreviewPanel({
+  layerIndex,
+  onExport,
+  onLayerChange,
+  onSettingChange,
+  settings,
+  simulation
+}) {
+  const layerCount = simulation.layerCount;
+  const activeLayerIndex = Math.min(layerIndex, Math.max(0, layerCount - 1));
+  const activeLayer = simulation.layers[activeLayerIndex];
+  const previewLines = getLayerGcodePreview(simulation, activeLayerIndex, 18);
+  const handleLayerInput = (event) => onLayerChange(Number(event.currentTarget.value));
+  const estimatedTime =
+    simulation.estimatedMinutes >= 90
+      ? `${(simulation.estimatedMinutes / 60).toFixed(1)} h`
+      : `${Math.ceil(simulation.estimatedMinutes)} min`;
+
+  return (
+    <section className="tool-section gcode-section">
+      <div className="section-heading">
+        <h2>G-code</h2>
+        <span>simulation</span>
+      </div>
+
+      <GcodeLayerCanvas layer={activeLayer} simulation={simulation} />
+
+      <label className="gcode-layer-control">
+        <span>{`Layer ${layerCount ? activeLayerIndex + 1 : 0}/${layerCount}`}</span>
+        <input
+          disabled={!layerCount}
+          max={Math.max(0, layerCount - 1)}
+          min={0}
+          onChange={handleLayerInput}
+          onInput={handleLayerInput}
+          type="range"
+          value={activeLayerIndex}
+        />
+      </label>
+
+      <div className="grid-two">
+        <NumberInput
+          label="Layer"
+          max={0.6}
+          min={0.08}
+          onChange={(value) => onSettingChange("layerHeightMm", value)}
+          step={0.01}
+          value={settings.layerHeightMm}
+        />
+        <NumberInput
+          label="Line"
+          max={8}
+          min={0.35}
+          onChange={(value) => onSettingChange("lineSpacingMm", value)}
+          step={0.05}
+          value={settings.lineSpacingMm}
+        />
+      </div>
+
+      <div className="metric-grid">
+        <Metric label="Time" value={layerCount ? estimatedTime : "-"} />
+        <Metric label="Lines" value={simulation.gcodeLines.length ? simulation.gcodeLines.length.toLocaleString() : "-"} />
+        <Metric label="Path" value={simulation.printPathMm ? `${Math.round(simulation.printPathMm / 1000)} m` : "-"} />
+        <Metric label="Tools" value={simulation.toolChanges ? simulation.toolChanges.toLocaleString() : "0"} />
+      </div>
+
+      <pre className="gcode-preview-lines" aria-label="G-code layer preview">
+        {previewLines.length ? previewLines.join("\n") : "; waiting for terrain"}
+      </pre>
+
+      <button
+        className="secondary-action"
+        disabled={!simulation.gcodeLines.length}
+        onClick={onExport}
+        type="button"
+      >
+        Export sim G-code
+      </button>
+    </section>
+  );
+}
+
+function GcodeLayerCanvas({ layer, simulation }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    ctx.fillStyle = "#f0efeb";
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    ctx.strokeStyle = "#d4cec3";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, rect.width - 1, rect.height - 1);
+
+    if (!layer?.paths?.length || !simulation.modelWidthMm || !simulation.modelDepthMm) {
+      ctx.fillStyle = "#8a8177";
+      ctx.font = "11px monospace";
+      ctx.fillText("NO TOOLPATH", 12, 22);
+      return;
+    }
+
+    const pad = 12;
+    const scale = Math.min(
+      (rect.width - pad * 2) / simulation.modelWidthMm,
+      (rect.height - pad * 2) / simulation.modelDepthMm
+    );
+    const drawW = simulation.modelWidthMm * scale;
+    const drawH = simulation.modelDepthMm * scale;
+    const xOffset = (rect.width - drawW) / 2;
+    const yOffset = (rect.height - drawH) / 2;
+    const toCanvas = (point) => ({
+      x: xOffset + (point.x + simulation.modelWidthMm / 2) * scale,
+      y: yOffset + (simulation.modelDepthMm / 2 - point.y) * scale
+    });
+
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+
+    layer.paths.forEach((path) => {
+      const color = simulation.tools[path.materialIndex]?.color ?? "#d84f94";
+      const start = toCanvas(path.points[0]);
+      const end = toCanvas(path.points[1]);
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = path.type === "perimeter" ? 0.95 : 0.74;
+      ctx.lineWidth = path.type === "perimeter" ? 2 : 1.15;
+      ctx.stroke();
+    });
+
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#27231f";
+    ctx.font = "11px monospace";
+    ctx.fillText(`Z ${roundMm(layer.z)} MM`, 12, rect.height - 12);
+  }, [layer, simulation]);
+
+  return <canvas className="gcode-layer-canvas" ref={canvasRef} />;
 }
 
 function FlareSourcePanel({ flare, imageSrc, materialPlan, onPreviewModeChange, previewMode }) {
@@ -1170,13 +1935,15 @@ function MockupShot({ kind, label }) {
 }
 
 function TerrainPreview({
+  gcodeLayerIndex,
+  gcodeSimulation,
   imageSrc,
   isLightMode,
   isGenerating,
   materialPlan,
   onWaterLevelChange,
+  renderMode,
   terrain,
-  texturePreview,
   trimWater,
   waterLevel
 }) {
@@ -1185,6 +1952,7 @@ function TerrainPreview({
   const waterRailRef = useRef(null);
   const waterRailDragRef = useRef(false);
   const waterPropsRef = useRef({ onWaterLevelChange, trimWater, waterLevel });
+  const activeGcodeLayer = gcodeSimulation?.layers?.[gcodeLayerIndex] ?? null;
 
   const setView = useCallback((view) => {
     const runtime = runtimeRef.current;
@@ -1426,6 +2194,7 @@ function TerrainPreview({
       camera,
       controls,
       currentTerrain: null,
+      gcodeOverlay: null,
       grid,
       modelRoot,
       view: "iso",
@@ -1476,7 +2245,17 @@ function TerrainPreview({
     }
 
     const viewerTheme = runtime.viewerTheme ?? getViewerTheme(isLightMode);
-    writePreviewColors(colors, previewPositions, activeTerrain.uvs, activeTerrain.stats, viewerTheme, materialPlan);
+    const usesArtworkTexture = renderMode === "artwork";
+    const usesGcodePreview = renderMode === "gcode";
+    const usesMaterialColors = renderMode === "materials";
+    writePreviewColors(
+      colors,
+      previewPositions,
+      activeTerrain.uvs,
+      activeTerrain.stats,
+      viewerTheme,
+      usesMaterialColors ? materialPlan : null
+    );
 
     geometry.setAttribute("position", new THREE.BufferAttribute(previewPositions, 3));
     geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
@@ -1488,31 +2267,31 @@ function TerrainPreview({
 
     let disposed = false;
     const material = new THREE.MeshStandardMaterial({
-      color: texturePreview ? 0xffffff : viewerTheme.solid,
-      emissive: texturePreview ? 0x000000 : viewerTheme.solidEmissive,
-      emissiveIntensity: texturePreview ? 0 : 0.12,
+      color: usesArtworkTexture || usesMaterialColors ? 0xffffff : viewerTheme.solid,
+      emissive: usesArtworkTexture || usesMaterialColors ? 0x000000 : viewerTheme.solidEmissive,
+      emissiveIntensity: usesArtworkTexture || usesMaterialColors ? 0 : 0.12,
       roughness: 0.7,
       metalness: 0.02,
-      opacity: isPlaceholder ? 0.74 : 1,
+      opacity: isPlaceholder ? 0.74 : usesGcodePreview ? 0.3 : 1,
       side: THREE.DoubleSide,
-      transparent: isPlaceholder,
-      vertexColors: !texturePreview
+      transparent: isPlaceholder || usesGcodePreview,
+      vertexColors: usesMaterialColors
     });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.userData.role = "terrainMesh";
-    mesh.userData.texturePreview = texturePreview;
+    mesh.userData.renderMode = renderMode;
     mesh.castShadow = true;
     mesh.receiveShadow = true;
 
-    const edgeGeometry = new THREE.EdgesGeometry(geometry, texturePreview ? 32 : 24);
+    const edgeGeometry = new THREE.EdgesGeometry(geometry, usesArtworkTexture ? 32 : 24);
     const edgeMaterial = new THREE.LineBasicMaterial({
-      color: texturePreview ? viewerTheme.textureEdges : viewerTheme.solidEdges,
+      color: usesArtworkTexture ? viewerTheme.textureEdges : viewerTheme.solidEdges,
       transparent: true,
-      opacity: isPlaceholder ? 0.18 : texturePreview ? 0.22 : 0.34
+      opacity: isPlaceholder ? 0.18 : usesArtworkTexture ? 0.22 : usesGcodePreview ? 0.18 : 0.34
     });
     const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
     edges.userData.role = "terrainEdges";
-    edges.userData.texturePreview = texturePreview;
+    edges.userData.renderMode = renderMode;
 
     const model = new THREE.Group();
     model.name = "terrain";
@@ -1523,7 +2302,7 @@ function TerrainPreview({
     frameTerrain(runtime, runtime.view);
     updateWaterGizmo(runtime, waterPropsRef.current.waterLevel, waterPropsRef.current.trimWater);
 
-    if (texturePreview && imageSrc) {
+    if (usesArtworkTexture && imageSrc) {
       const loader = new THREE.TextureLoader();
       loader.setCrossOrigin("anonymous");
       loader.load(
@@ -1556,7 +2335,39 @@ function TerrainPreview({
       }
       disposeObject(model);
     };
-  }, [imageSrc, materialPlan, terrain, texturePreview]);
+  }, [imageSrc, materialPlan, renderMode, terrain]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return undefined;
+
+    if (runtime.gcodeOverlay) {
+      runtime.modelRoot.remove(runtime.gcodeOverlay);
+      disposeObject(runtime.gcodeOverlay);
+      runtime.gcodeOverlay = null;
+    }
+
+    if (renderMode !== "gcode") return undefined;
+
+    const layer = gcodeSimulation?.layers?.[gcodeLayerIndex];
+    if (!layer?.paths?.length) return undefined;
+
+    const overlay = createGcodePathOverlay({
+      layer,
+      simulation: gcodeSimulation,
+      theme: getViewerTheme(isLightMode)
+    });
+    runtime.modelRoot.add(overlay);
+    runtime.gcodeOverlay = overlay;
+
+    return () => {
+      if (runtime.gcodeOverlay === overlay) {
+        runtime.modelRoot.remove(overlay);
+        runtime.gcodeOverlay = null;
+      }
+      disposeObject(overlay);
+    };
+  }, [gcodeLayerIndex, gcodeSimulation, isLightMode, renderMode]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
@@ -1579,6 +2390,13 @@ function TerrainPreview({
         <div className={`water-gizmo-readout ${trimWater ? "is-active" : ""}`}>
           <span>Water Z</span>
           <strong>{trimWater ? `${Math.round(clampWaterLevel(waterLevel) * 100)}%` : "Off"}</strong>
+        </div>
+      )}
+      {terrain && renderMode === "gcode" && activeGcodeLayer && (
+        <div className="gcode-viewer-readout">
+          <span>{`Layer ${activeGcodeLayer.index + 1}/${gcodeSimulation.layerCount}`}</span>
+          <strong>{`Z ${roundMm(activeGcodeLayer.z)} mm`}</strong>
+          <em>{`${activeGcodeLayer.paths.length} paths`}</em>
         </div>
       )}
       {terrain && (
@@ -1878,10 +2696,127 @@ function updateBuildPlate(runtime, model) {
   runtime.scene.add(runtime.grid);
 }
 
+function createGcodePathOverlay({ layer, simulation, theme }) {
+  const root = new THREE.Group();
+  root.name = "gcode-path-overlay";
+
+  const extrusionByTool = new Map();
+  const travelPositions = [];
+  const z = layer.z + 0.85;
+  const travelZ = z + 1.2;
+  let lastEnd = null;
+  let printHeadPoint = null;
+
+  layer.paths.forEach((path) => {
+    const [start, end] = path.points;
+    const tool = simulation.tools[path.materialIndex] ?? simulation.tools[0];
+    const key = tool?.tool ?? `T${path.materialIndex + 1}`;
+    const printPositions = extrusionByTool.get(key) ?? {
+      color: tool?.color ?? "#d84f94",
+      positions: []
+    };
+
+    if (lastEnd && distance2d(lastEnd, start) > 0.01) {
+      pushGcodeSegment(travelPositions, lastEnd, start, travelZ);
+    }
+
+    pushGcodeSegment(printPositions.positions, start, end, z);
+    extrusionByTool.set(key, printPositions);
+    lastEnd = end;
+    printHeadPoint = end;
+  });
+
+  if (travelPositions.length) {
+    const travel = createGcodeLineSegments(
+      travelPositions,
+      theme.gcodeTravel,
+      0.18,
+      "gcode-travel"
+    );
+    root.add(travel);
+  }
+
+  extrusionByTool.forEach((toolPath, tool) => {
+    if (!toolPath.positions.length) return;
+    const line = createGcodeLineSegments(toolPath.positions, toolPath.color, 0.96, `gcode-${tool}`);
+    root.add(line);
+  });
+
+  if (printHeadPoint) {
+    const head = createGcodePrintHead(printHeadPoint, z + 2.8, theme);
+    root.add(head);
+  }
+
+  return root;
+}
+
+function createGcodeLineSegments(positions, color, opacity, name) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+
+  const material = new THREE.LineBasicMaterial({
+    color: new THREE.Color(color),
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+    opacity
+  });
+
+  const line = new THREE.LineSegments(geometry, material);
+  line.name = name;
+  line.renderOrder = 20;
+  return line;
+}
+
+function createGcodePrintHead(point, z, theme) {
+  const root = new THREE.Group();
+  root.name = "gcode-print-head";
+  root.position.set(point.x, z, -point.y);
+
+  const color = new THREE.Color(theme.gcodeHead);
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(3.3, 18, 12),
+    new THREE.MeshBasicMaterial({
+      color,
+      depthTest: false,
+      depthWrite: false
+    })
+  );
+  sphere.renderOrder = 24;
+  root.add(sphere);
+
+  const nozzle = new THREE.Mesh(
+    new THREE.ConeGeometry(2.4, 7.5, 20),
+    new THREE.MeshBasicMaterial({
+      color,
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.82
+    })
+  );
+  nozzle.position.y = -5.6;
+  nozzle.rotation.x = Math.PI;
+  nozzle.renderOrder = 23;
+  root.add(nozzle);
+
+  return root;
+}
+
+function pushGcodeSegment(positions, start, end, z) {
+  positions.push(start.x, z, -start.y, end.x, z, -end.y);
+}
+
+function distance2d(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
 function getViewerTheme(isLightMode) {
   return isLightMode
     ? {
         background: 0xf0efeb,
+        gcodeHead: 0x111111,
+        gcodeTravel: 0x6f6a61,
         gridMajor: 0xc6c0b6,
         gridMinor: 0xdfdad2,
         low: 0xd3ddd9,
@@ -1894,6 +2829,8 @@ function getViewerTheme(isLightMode) {
       }
     : {
         background: 0x0d0e0d,
+        gcodeHead: 0xffffff,
+        gcodeTravel: 0x8c8f8b,
         gridMajor: 0x5e645b,
         gridMinor: 0x2b302c,
         low: 0x273936,
@@ -1917,13 +2854,17 @@ function applyViewerTheme(runtime) {
 
   runtime.currentTerrain?.traverse((child) => {
     if (child.userData.role === "terrainMesh") {
-      child.material.color.set(child.userData.texturePreview ? 0xffffff : theme.solid);
-      child.material.emissive?.set(child.userData.texturePreview ? 0x000000 : theme.solidEmissive);
+      const usesColorMaterial =
+        child.userData.renderMode === "artwork" || child.userData.renderMode === "materials";
+      child.material.color.set(usesColorMaterial ? 0xffffff : theme.solid);
+      child.material.emissive?.set(usesColorMaterial ? 0x000000 : theme.solidEmissive);
       child.material.needsUpdate = true;
     }
 
     if (child.userData.role === "terrainEdges") {
-      child.material.color.set(child.userData.texturePreview ? theme.textureEdges : theme.solidEdges);
+      child.material.color.set(
+        child.userData.renderMode === "artwork" ? theme.textureEdges : theme.solidEdges
+      );
       child.material.needsUpdate = true;
     }
   });
@@ -2050,6 +2991,24 @@ function Metric({ label, value }) {
   );
 }
 
+function useMobileWizard() {
+  const [matches, setMatches] = useState(() =>
+    typeof window === "undefined" ? false : window.matchMedia("(max-width: 760px)").matches
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const query = window.matchMedia("(max-width: 760px)");
+    const update = () => setMatches(query.matches);
+    update();
+    query.addEventListener?.("change", update);
+    return () => query.removeEventListener?.("change", update);
+  }, []);
+
+  return matches;
+}
+
 function normalizeCollectionFlare(flare) {
   const inscriptionId = flare.id;
   const attributes = flare.meta?.attributes ?? [];
@@ -2073,6 +3032,13 @@ function normalize(value) {
 
 function roundMm(value) {
   return Math.round(value * 10) / 10;
+}
+
+function estimatePlaceholderPrice(settings, materialPlan) {
+  const areaFactor = (settings.widthMm * settings.depthMm) / 1000;
+  const heightFactor = settings.reliefHeightMm * 1.7;
+  const materialFactor = materialPlan.mode === "flare-colors" ? 90 : 35;
+  return Math.round(95 + areaFactor + heightFactor + materialFactor);
 }
 
 function clampWaterLevel(value) {

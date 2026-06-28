@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
+    "cloudflare:stage": "npm run build && npx --yes wrangler pages deploy dist --project-name physicalflare --branch staging",
+    "cloudflare:deploy": "npm run build && npx --yes wrangler pages deploy dist --project-name physicalflare --branch main",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
